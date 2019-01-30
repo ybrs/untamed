@@ -1,7 +1,7 @@
 import asyncio
 import uvloop
 import msgpack
-import ujson
+import ujson as json
 
 def get_unpacker():
     return msgpack.Unpacker(encoding='utf-8', use_list=False)
@@ -13,9 +13,9 @@ class EchoServerProtocol:
 
     def datagram_received(self, data, addr):
         # message = data.decode()
-        msg = msgpack.unpackb(data, encoding='utf-8')
+        msg = json.loads(data)
         # print('Received %r from %s' % (msg, addr))
-        ackmsg = msgpack.packb({'ack': msg['msg_id']})
+        ackmsg = json.dumps({'ack': msg['msg_id']}).encode()
         # print('Send %r to %s' % ('ack', addr))
         self.transport.sendto(ackmsg, addr)
         # print("->", msg['msg_id'])

@@ -2,8 +2,9 @@ import asyncio
 import msgpack
 import uvloop
 import time
-
+import pickle
 from worldwithlistener import serve
+import ujson as json
 
 """
 notes - this can do around 14k per second.
@@ -14,6 +15,10 @@ periodic
 13
 completed 3.4832000732421875
 time -  3.4832000732421875 14354.616142810208  per second
+
+# buffered write
+time -  0.4210240840911865 118758.05182957387  per second
+
 """
 
 
@@ -27,6 +32,13 @@ class Writer(object):
         self.host = host
         self.port = port
         self.writer = writer
+        self.buffer = []
+
+    def write_buf(self):
+        packed = json.dumps(self.buffer).encode()
+        self.writer.write(packed)
+        self.writer.write(b'\r\n')
+        self.buffer = []
 
     def write(self, msg):
         self.counter += 1
@@ -35,9 +47,9 @@ class Writer(object):
             'msg': msg,
             'from': [self.host, self.port]
         }
-        packed = msgpack.packb(req)
-        self.writer.write(packed)
-        self.writer.write(b'\r\n')
+        self.buffer.append(req)
+        if len(self.buffer) == 100:
+            self.write_buf()
         return self.counter
 
 
@@ -46,14 +58,16 @@ async def tcp_echo_client(host, port, server_host, server_port):
     async def heartbeat(writer):
         while True:
             print('periodic')
-            packed = msgpack.packb({'heartbeat': time.time()})
+            packed = json.dumps({'heartbeat': time.time()})
 
-            writer.write(packed)
+            writer.write(packed.encode())
             writer.write(b'\r\n')
             await asyncio.sleep(10)
 
     reader, writer = await asyncio.open_connection(
         host, int(port))
+
+    print(writer.transport.get_write_buffer_limits())
 
     enchanced_writer = Writer(server_host, server_port, writer)
     # enchanced_writer.write({'connected': True})
@@ -65,38 +79,33 @@ async def tcp_echo_client(host, port, server_host, server_port):
     n = 50000
     for i in range(1, n):
         waiting.add(enchanced_writer.write({'foo': 'bar'}))
+    enchanced_writer.write_buf()
     diff = time.time() - t1
     print("time - ", diff, n/diff, " per second")
 
     # print(waiting)
-    unpacker = get_unpacker()
+    # unpacker = get_unpacker()
     while True:
         data = await asyncio.wait_for(reader.readuntil(b'\r\n'), 30)
         # print("->", data)
         if not data:
             return
-        unpacker.feed(data)
-        try:
-            req = next(unpacker)
-        except msgpack.ExtraData as edata:
-            print(edata)
-            return
-        except StopIteration:
-            continue
-        unpacker = get_unpacker()
-        # print("received>>>", req)
-        try:
-            if 'heartbeat' in req:
+
+        reqs = json.loads(data)
+        for req in reqs:
+            try:
+                if 'heartbeat' in req:
+                    continue
+            except:
+                print(req)
+                # raise
                 continue
-        except:
-            print(req)
-            # raise
-            continue
-        waiting.remove(req['msg_id'])
-        if not waiting:
-            diff = time.time() - t1
-            print("completed", diff)
-            print("time - ", diff, n / diff, " per second")
+            waiting.remove(req['msg_id'])
+            # print(waiting)
+            if not waiting:
+                diff = time.time() - t1
+                print("completed", diff)
+                print("time - ", diff, n / diff, " per second")
 
 
             # print('Close the connection')

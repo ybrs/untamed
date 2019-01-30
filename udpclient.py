@@ -5,9 +5,7 @@ import time
 import ujson as json
 
 """
-notes this can do around 25k/sec - but packet loss over 5k
-completed 0.16845202445983887 for 5000
-
+completed 0.17827606201171875 with ujson 5k
 """
 
 
@@ -28,7 +26,7 @@ class EchoClientProtocol:
 
     def datagram_received(self, data, addr):
         # print("Received:", data.decode())
-        msg = msgpack.unpackb(data, encoding='utf-8')
+        msg = json.loads(data)
         # msg = json.decode(data)
         # print("received", msg)
         self.waiting.remove(msg['ack'])
@@ -45,7 +43,7 @@ class EchoClientProtocol:
             'msg_id': self.cnt,
             'msg': msg
         }
-        self.transport.sendto(msgpack.packb(req))
+        self.transport.sendto(json.dumps(req).encode())
         # self.transport.sendto(json.encode(req))
 
     def error_received(self, exc):
@@ -66,7 +64,7 @@ async def main():
         lambda: p,
         remote_addr=('127.0.0.1', 9999))
 
-    for i in range(1, 5000):
+    for i in range(1, 10000):
         p.write('hello {}'.format(i))
 
     try:
