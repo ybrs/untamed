@@ -5,6 +5,17 @@ import time
 
 from worldwithlistener import serve
 
+"""
+notes - this can do around 14k per second.
+
+(venv3) $ python worldclient.py 127.0.0.1:6000
+time -  0.25844502449035645 193464.74206109426  per second
+periodic
+13
+completed 3.4832000732421875
+time -  3.4832000732421875 14354.616142810208  per second
+"""
+
 
 def get_unpacker():
     return msgpack.Unpacker(encoding='utf-8', use_list=False)
@@ -27,6 +38,7 @@ class Writer(object):
         packed = msgpack.packb(req)
         self.writer.write(packed)
         self.writer.write(b'\r\n')
+        return self.counter
 
 
 async def tcp_echo_client(host, port, server_host, server_port):
@@ -44,19 +56,23 @@ async def tcp_echo_client(host, port, server_host, server_port):
         host, int(port))
 
     enchanced_writer = Writer(server_host, server_port, writer)
-    enchanced_writer.write({'connected': True})
+    # enchanced_writer.write({'connected': True})
 
     asyncio.ensure_future(heartbeat(writer))
 
+    waiting = set()
     t1 = time.time()
-    for i in range(1, 100000):
-        enchanced_writer.write({'foo': 'bar'})
-    print("time - ", time.time() - t1)
+    n = 50000
+    for i in range(1, n):
+        waiting.add(enchanced_writer.write({'foo': 'bar'}))
+    diff = time.time() - t1
+    print("time - ", diff, n/diff, " per second")
 
-
+    # print(waiting)
     unpacker = get_unpacker()
     while True:
         data = await asyncio.wait_for(reader.readuntil(b'\r\n'), 30)
+        # print("->", data)
         if not data:
             return
         unpacker.feed(data)
@@ -69,8 +85,21 @@ async def tcp_echo_client(host, port, server_host, server_port):
             continue
         unpacker = get_unpacker()
         # print("received>>>", req)
+        try:
+            if 'heartbeat' in req:
+                continue
+        except:
+            print(req)
+            # raise
+            continue
+        waiting.remove(req['msg_id'])
+        if not waiting:
+            diff = time.time() - t1
+            print("completed", diff)
+            print("time - ", diff, n / diff, " per second")
 
-    # print('Close the connection')
+
+            # print('Close the connection')
     # writer.close()
 
     # await writer.wait_closed()

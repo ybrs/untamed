@@ -20,28 +20,21 @@ async def serve(reader, writer):
             print("connection ended - quitting")
             return
         # data = reader.read(SOCKET_RECV_SIZE)
-        print("data -", data)
+        # print("data -", data)
         if not data:
             return
 
-        # if b"done\n" in data:
-        #     break
-        # # data = await reader.readline()
-        print("2")
         unpacker.feed(data)
         try:
             req = next(unpacker)
-            print("4")
         except msgpack.ExtraData as edata:
             print(edata)
             print("^ --- edata")
             return
         except StopIteration:
-            print("5")
             continue
         unpacker = get_unpacker()
-        print("received>>>", req)
-        print("6")
+        # print("received>>>", req)
         if 'heartbeat' in req:
             # don't ack heartbeats
             writer.write(msgpack.packb({'heartbeat': True}))
@@ -49,8 +42,6 @@ async def serve(reader, writer):
             continue
         writer.write(msgpack.packb({'acked': True, 'msg_id': req['msg_id']}))
         writer.write(b"\r\n")
-        print("7")
-
 
 if __name__ == '__main__':
     uvloop.install()
