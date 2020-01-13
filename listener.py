@@ -20,7 +20,7 @@ app = Sanic()
 
 class Worker(Actor):
     async def on_message(self, msg, sender):
-        # print(msg)
+        print(msg)
         pass
 
 world = World()

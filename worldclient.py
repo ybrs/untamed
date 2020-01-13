@@ -21,11 +21,6 @@ time -  0.4210240840911865 118758.05182957387  per second
 
 """
 
-
-def get_unpacker():
-    return msgpack.Unpacker(encoding='utf-8', use_list=False)
-
-
 class Writer(object):
     def __init__(self, host, port, writer):
         self.counter = 0
@@ -52,6 +47,11 @@ class Writer(object):
             self.write_buf()
         return self.counter
 
+    async def periodic_cb(self):
+        while True:
+            # print("writing buf")
+            self.write_buf()
+            await asyncio.sleep(0.01)
 
 async def tcp_echo_client(host, port, server_host, server_port):
 
@@ -73,18 +73,18 @@ async def tcp_echo_client(host, port, server_host, server_port):
     # enchanced_writer.write({'connected': True})
 
     asyncio.ensure_future(heartbeat(writer))
+    asyncio.ensure_future(enchanced_writer.periodic_cb())
 
     waiting = set()
     t1 = time.time()
     n = 50000
     for i in range(1, n):
         waiting.add(enchanced_writer.write({'foo': 'bar'}))
-    enchanced_writer.write_buf()
+    # enchanced_writer.write_buf()
     diff = time.time() - t1
     print("time - ", diff, n/diff, " per second")
 
     # print(waiting)
-    # unpacker = get_unpacker()
     while True:
         data = await asyncio.wait_for(reader.readuntil(b'\r\n'), 30)
         # print("->", data)
@@ -105,12 +105,11 @@ async def tcp_echo_client(host, port, server_host, server_port):
             if not waiting:
                 diff = time.time() - t1
                 print("completed", diff)
-                print("time - ", diff, n / diff, " per second")
+                print("- full time - ", diff, n / diff, " per second")
 
 
-            # print('Close the connection')
+    # print('Close the connection')
     # writer.close()
-
     # await writer.wait_closed()
 
 import sys
@@ -120,7 +119,11 @@ async def main(server_host, server_port):
     seed_node, seed_port = sys.argv[1].split(':')
     await tcp_echo_client(seed_node, seed_port, server_host, server_port)
 
-loop = uvloop.new_event_loop()
+# loop = uvloop.new_event_loop()
+asyncio.get_event_loop().close()
+asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+loop = asyncio.get_event_loop()
+
 coro = asyncio.start_server(serve, '127.0.0.1', None, loop=loop)
 server = loop.run_until_complete(coro)
 

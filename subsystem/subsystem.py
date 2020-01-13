@@ -1,12 +1,17 @@
 import asyncio
 import random
+import logging
 
+logger = logging.getLogger(__name__)
 
 class Actor(object):
     def __init__(self, name, queue, world):
         self.queue = queue
         self.name = name
         self.world = world
+
+    async def tell(self, msg, sender=None):
+        await self.queue.put((msg, sender))
 
     async def on_message(self, msg, sender):
         """\
@@ -26,8 +31,28 @@ class Actor(object):
                 # the producer emits None to indicate that it is done
                 # print("breaking - {}".format(self.name))
                 break
-            # print(">>>", item)
             await self.on_message(*item)
+
+
+class SuspendableActor(Actor):
+    def __init__(self, name, queue, world):
+        self.state = {}
+        super().__init__(name, queue, world)
+
+    def save_state(self):
+        pass
+
+    def load_state(self):
+        pass
+
+    async def on_message(self, msg, sender):
+        if msg == 'INTERNAL_SUSPEND':
+            pass
+        try:
+            self.state['recv'] = self.state.get('recv', 0) + 1
+        except Exception: # noqa
+            logger.exception("Exception received on message in actor")
+        await super().on_message(msg, sender)
 
 
 class World(object):
@@ -53,15 +78,16 @@ class World(object):
     async def tell(self, who, msg, sender=None):
         actor = self.get_actor(who)
         # print("found actor", actor)
-        await actor.queue.put((msg, sender))
+        await actor.tell(msg, sender)
 
     async def suspend_actor(self, name):
         actor = self.actors[name]
+        # TODO: this should put the actor into sleep,
+        #  and some durable storage
+        await actor.tell('INTERNAL_SUSPEND', None)
         await actor.queue.put(None)
         del self.actors[name]
 
     async def destroy(self):
         for k, actor in self.actors.items():
             await actor.queue.put(None)
-
-

@@ -34,7 +34,7 @@ if __name__ == '__main__':
     loop = asyncio.get_event_loop()
     world = World()
     try:
-        asyncio.async(run(world))
+        asyncio.ensure_future(run(world))
         loop.run_forever()
     except KeyboardInterrupt:
         pass

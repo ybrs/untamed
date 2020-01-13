@@ -1,55 +1,54 @@
 import asyncio
 import math
 
-from subsystem import World
+from subsystem import World, SuspendableActor
 
 
-def convert_size(size_bytes):
+def convert_size(size_bytes, note):
     if size_bytes == 0:
         return "0B"
     size_name = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
     i = int(math.floor(math.log(size_bytes, 1024)))
     p = math.pow(1024, i)
     s = round(size_bytes / p, 2)
-    return "%s %s" % (s, size_name[i])
+    return f"{note} {s} {size_name[i]}"
 
 
-def print_process_memory():
+def print_process_memory(note):
     import os
     import psutil
     process = psutil.Process(os.getpid())
-    print(convert_size(process.memory_info().rss))
+    print(convert_size(process.memory_info().rss, note))
 
 
 async def run(world: World, n):
     import time
     t1 = time.time()
     for x in range(1, n+1):
-        world.create_actor('worker_{}'.format(x))
-    print("time for {} - {} elapsed".format(n, time.time() - t1))
-    print_process_memory()
-    print("slleep 10")
+        world.create_actor('worker_{}'.format(x), SuspendableActor)
+    print("time for creating actors {} - {} elapsed".format(n, time.time() - t1))
+    print_process_memory("after actors created")
+    print("sleep 10")
     await asyncio.sleep(3)
     print("done ")
 
     for x in range(1, n + 1):
         actor = world.get_actor('worker_{}'.format(x))
-        print('producing {}/{}'.format(x, n))
+        # print('producing {}/{}'.format(x, n))
         item = str(x)
-        await actor.queue.put((item, None))
+        await actor.tell((item, None))
 
-    print("slleep 10")
+    print("sleep 10")
     await asyncio.sleep(3)
     print("done ")
 
-    print_process_memory()
+    print_process_memory("before suspend memory")
     print("suspend")
     for x in range(1, n + 1):
-        # print("suspending", x)
         await world.suspend_actor('worker_{}'.format(x))
 
     while True:
-        print_process_memory()
+        print_process_memory("after suspend: memory")
         print("sleep")
         await asyncio.sleep(1)
         print("sleep")
@@ -62,7 +61,7 @@ if __name__ == '__main__':
     loop = asyncio.get_event_loop()
     world = World()
     try:
-        asyncio.async(run(world, 100000))
+        asyncio.ensure_future(run(world, 100_000))
         loop.run_forever()
     except KeyboardInterrupt:
         pass
