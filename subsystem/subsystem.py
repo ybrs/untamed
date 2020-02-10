@@ -4,6 +4,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class Actor(object):
     def __init__(self, name, queue, world):
         self.queue = queue
@@ -39,19 +40,29 @@ class SuspendableActor(Actor):
         self.state = {}
         super().__init__(name, queue, world)
 
-    def save_state(self):
-        pass
+    def set_state(self, new_state: dict):
+        self.state.update(new_state)
 
-    def load_state(self):
-        pass
+    async def save_state(self):
+        await self.world.tell(self.name, {'cmd': 'SAVE_STATE', 'data': self.state})
+
+    async def load_state(self):
+        await self.world.tell(self.name, {'cmd': 'LOAD_STATE'})
 
     async def on_message(self, msg, sender):
         if msg == 'INTERNAL_SUSPEND':
-            pass
+            await self.save_state()
+            return
+
+        if msg == 'INTERNAL_REVIVE':
+            await self.load_state()
+            return
+
         try:
-            self.state['recv'] = self.state.get('recv', 0) + 1
-        except Exception: # noqa
+            self.set_state({'recv': self.state.get('recv', 0) + 1})
+        except Exception:  # noqa
             logger.exception("Exception received on message in actor")
+
         await super().on_message(msg, sender)
 
 
@@ -82,11 +93,12 @@ class World(object):
 
     async def suspend_actor(self, name):
         actor = self.actors[name]
-        # TODO: this should put the actor into sleep,
-        #  and some durable storage
         await actor.tell('INTERNAL_SUSPEND', None)
         await actor.queue.put(None)
         del self.actors[name]
+
+    async def revive_actor(self, name):
+        pass
 
     async def destroy(self):
         for k, actor in self.actors.items():
