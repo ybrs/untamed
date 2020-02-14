@@ -59,19 +59,27 @@ class SuspendableActor(Actor):
         self.state.update(new_state)
 
     async def save_state(self):
-        await self.world.tell('persistence', {'cmd': 'SAVE_STATE', 'data': self.state})
+        logger.info("saving state 2")
+
+        await self.world.tell('persistence', {'cmd': 'SAVE_STATE', 'data': self.state}, sender=self.name)
 
     async def load_state(self):
-        await self.world.tell('persistence', {'cmd': 'LOAD_STATE'})
+        await self.world.tell('persistence', {'cmd': 'LOAD_STATE'}, sender=self.name)
 
     async def on_message(self, msg, sender):
         if msg['cmd'] == 'INTERNAL_SUSPEND':
+            logger.info("saving state ")
+
             await self.save_state()
             return
 
-        if msg['cmd'] == 'INTERNAL_REVIVE':
+        if msg['cmd'] == 'INTERNAL_RELOAD_STATE':
+            logger.info("re-loading state ")
             await self.load_state()
             return
+
+        if msg['cmd'] == 'LOADED_STATE':
+            return await self.set_state(msg['data'])
 
         try:
             await self.set_state({'recv': self.state.get('recv', 0) + 1})
@@ -85,8 +93,11 @@ class RedisPersistence(Actor):
     async def save(self, key, value):
         return await self.redis.set(key, pickle.dumps(value))
 
-    async def load(self, key):
-        return await self.redis.get(key)
+    async def load(self, key, sender):
+        data = await self.redis.get(key)
+        data = pickle.loads(data)
+        logger.info("loaded data - %s", data)
+        await self.world.tell(sender, {'cmd': 'LOADED_STATE', 'data': data})
 
     async def connect(self, conn_url):
         self.redis = await aioredis.create_redis_pool(conn_url)
@@ -97,11 +108,16 @@ class RedisPersistence(Actor):
         await self.redis.wait_closed()
 
     async def on_message(self, msg, sender):
-        try:
-            if msg['cmd'] == 'connect':
-                await self.connect(msg['data'])
-        except Exception as e:
-            print("Exc on p", e)
+        # logger.info("PERSISTENCE - got message on persistence %s %s", msg, sender)
+        if msg['cmd'] == 'connect':
+            await self.connect(msg['data'])
+
+        if msg['cmd'] == 'SAVE_STATE':
+            await self.save(f'state::{sender}', msg['data'])
+
+        if msg['cmd'] == 'LOAD_STATE':
+            logger.info("load sate !")
+            await self.load(f'state::{sender}', sender)
 
     def __del__(self):
         print("delete !")
@@ -144,7 +160,8 @@ class World:
             return actor
         return self.create_actor(name, klass)
 
-    async def tell(self, who, msg, sender=None):
+    async def tell(self, who, msg, sender:str=None):
+        logger.info("to actor - %s %s %s", who, msg, sender)
         actor = self.get_actor(who)
         # print("found actor", actor)
         await actor.tell(msg, sender)
@@ -157,7 +174,6 @@ class World:
         self.wait_reply_list[msg_id] = fut
 
         await actor.tell(msg, sender=self.self_actor.name, msg_id=msg_id)
-        print("---->", fut, type(fut))
 
         return await fut
 
@@ -181,7 +197,7 @@ class World:
 
     async def revive_actor(self, name, klass):
         actor = self.create_actor(name, klass)
-        await self.tell(name, {'cmd': 'INTERNAL_RELOAD_STATE'})
+        await actor.tell({'cmd': 'INTERNAL_RELOAD_STATE'})
 
     async def destroy(self):
         for k, actor in self.actors.items():
