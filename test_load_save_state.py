@@ -29,7 +29,6 @@ async def test_load_save():
     t = time.time()
     await world.tell('some-actor', {'cmd': 'set_foo', 'data': {'t': t}})
     result = await world.tell_and_get('some-actor', {'cmd': 'get_foo'})
-    print("result:::", result)
     assert result['data']['t'] == t
     print("--- actors::", world.actors)
 
@@ -38,13 +37,9 @@ async def test_load_save():
 
     await world.revive_actor('some-actor', SomeActor)
     result = await world.tell_and_get('some-actor', {'cmd': 'get_foo'})
-    print("result 2222", result)
     assert result['data']['t'] == t
 
-    await asyncio.sleep(1)
-
-    await world.stop_actor('persistence')
-    await world.stop_actor('some-actor')
-    await world.stop_actor('world')
-
-    await asyncio.sleep(1)
+    # await world.stop_actor('persistence')
+    # await world.stop_actor('some-actor')
+    # await world.stop_actor('world')
+    await world.stop()

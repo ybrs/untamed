@@ -34,6 +34,9 @@ class Actor:
     async def on_stop(self):
         pass
 
+    async def post_stop(self):
+        await self.world.tell(self.world.self_actor.name, {'cmd': 'STOPPED'}, sender=self.name)
+
     async def pre_message(self, msg, sender):
         return msg, sender
 
@@ -42,11 +45,20 @@ class Actor:
             # wait for an item from the producer
             # item is (msg, sender) tuple
             item = await self.queue.get()
+            logger.info(f"consume {item}")
             if item is None:
                 # the producer emits None to indicate that it is done
                 # print("breaking - {}".format(self.name))
                 await self.on_stop()
                 break
+
+            if item and 'cmd' in item[0]:
+                logger.info(f"consume2 {item[0]['cmd']}")
+
+                if item[0]['cmd'] == 'INTERNAL_STOP':
+                    await self.on_stop()
+                    await self.post_stop()
+                    return
 
             try:
                 item = await self.pre_message(*item)
@@ -157,12 +169,21 @@ class WorldActor(Actor):
     async def on_message(self, msg, sender):
         try:
             await super().on_message(msg, sender)
-            print("msg world actor", msg)
+            logger.info("msg world actor %s", msg)
             if 'reply_to' in msg:
                 await self.world.got_reply(msg)
+
+            if msg.get('cmd', None) == 'STOPPED':
+                logger.info(f"received STOPPED {sender}")
+                if sender in self.world.wait_stop:
+                    self.world.wait_stop.remove(sender)
+                # del self.world.actors[sender]
+
+
         except Exception as e:
+            logger.exception("exception on world actor")
+
             print("-> exc world actor", e, type(e))
-            logger.exception("x")
 
 
 class World:
@@ -170,6 +191,7 @@ class World:
         self.actors = {}
         self.self_actor = self.create_actor('world', WorldActor)
         self.wait_reply_list = {}
+        self.wait_stop = set()
 
     def create_actor(self, name, klass=Actor, **init):
         print("create actor", name)
@@ -182,7 +204,6 @@ class World:
     def get_actor(self, name):
         actor = self.actors.get(name, None)
         if not actor:
-            print("actorssss", self.actors)
             raise Exception(f'Actor "{name}" not found ')
         return actor
 
@@ -222,10 +243,23 @@ class World:
         del self.actors[name]
 
     async def stop_actor(self, name):
-        print("stop actor - ", name)
         actor = self.actors[name]
         await actor.queue.put(None)
         del self.actors[name]
+
+    async def stop(self):
+        for name, actor in self.actors.items():
+            if name != self.self_actor.name:
+                self.wait_stop.add(name)
+                logger.info(f"WAIT self.wait_stop {self.wait_stop}")
+                await actor.tell({'cmd': 'INTERNAL_STOP'}, None)
+
+        while True:
+            if not self.wait_stop:
+                break
+            await asyncio.sleep(0.100)
+
+        await self.stop_actor(self.self_actor.name)
 
     async def revive_actor(self, name, klass):
         actor = self.create_actor(name, klass)
