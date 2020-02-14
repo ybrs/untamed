@@ -37,8 +37,6 @@ async def test_load_save():
     print("--- actors::", world.actors)
 
     await world.revive_actor('some-actor', SomeActor)
-    await asyncio.sleep(1) # TODO: wait for whole thing
-    #
     result = await world.tell_and_get('some-actor', {'cmd': 'get_foo'})
     print("result 2222", result)
     assert result['data']['t'] == t

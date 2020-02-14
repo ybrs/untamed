@@ -3,6 +3,7 @@ import pickle
 import random
 import logging
 import uuid
+
 import aioredis
 
 logging.basicConfig(level=logging.DEBUG)
@@ -33,6 +34,9 @@ class Actor:
     async def on_stop(self):
         pass
 
+    async def pre_message(self, msg, sender):
+        return msg, sender
+
     async def consume(self):
         while True:
             # wait for an item from the producer
@@ -43,9 +47,13 @@ class Actor:
                 # print("breaking - {}".format(self.name))
                 await self.on_stop()
                 break
+
             try:
-                await self.on_message(*item)
+                item = await self.pre_message(*item)
+                if item:
+                    await self.on_message(*item)
             except Exception as e:
+                logger.exception(f"Exception on processing on_message {self.name}")
                 print("-> exception", e, type(e), self, item)
         # print("Exiting actor")
 
@@ -53,6 +61,8 @@ class Actor:
 class SuspendableActor(Actor):
     def __init__(self, name, queue, world):
         self.state = {}
+        self.wait_for = None
+        self.wait_queue = []
         super().__init__(name, queue, world)
 
     async def set_state(self, new_state: dict):
@@ -66,6 +76,25 @@ class SuspendableActor(Actor):
     async def load_state(self):
         await self.world.tell('persistence', {'cmd': 'LOAD_STATE'}, sender=self.name)
 
+    async def replay_waiting_messages(self):
+        for t in self.wait_queue:
+            item = await self.pre_message(*t)
+            if item:
+                await self.on_message(*item)
+
+    async def pre_message(self, msg, sender):
+        if self.wait_for:
+            if msg['cmd'] != self.wait_for:
+                logger.info(f"waiting for {self.wait_for} but received {msg}")
+                self.wait_queue.append((msg, sender))
+            else:
+                logger.info(f"resolved waiting for {self.wait_for}")
+                asyncio.ensure_future(self.replay_waiting_messages())
+                self.wait_for = None
+                return msg, sender
+        else:
+            return msg, sender
+
     async def on_message(self, msg, sender):
         if msg['cmd'] == 'INTERNAL_SUSPEND':
             logger.info("saving state ")
@@ -76,6 +105,7 @@ class SuspendableActor(Actor):
         if msg['cmd'] == 'INTERNAL_RELOAD_STATE':
             logger.info("re-loading state ")
             await self.load_state()
+            self.wait_for = 'LOADED_STATE'
             return
 
         if msg['cmd'] == 'LOADED_STATE':
@@ -122,6 +152,7 @@ class RedisPersistence(Actor):
     def __del__(self):
         print("delete !")
 
+
 class WorldActor(Actor):
     async def on_message(self, msg, sender):
         try:
@@ -132,6 +163,7 @@ class WorldActor(Actor):
         except Exception as e:
             print("-> exc world actor", e, type(e))
             logger.exception("x")
+
 
 class World:
     def __init__(self):
@@ -160,7 +192,7 @@ class World:
             return actor
         return self.create_actor(name, klass)
 
-    async def tell(self, who, msg, sender:str=None):
+    async def tell(self, who, msg, sender: str = None):
         logger.info("to actor - %s %s %s", who, msg, sender)
         actor = self.get_actor(who)
         # print("found actor", actor)
