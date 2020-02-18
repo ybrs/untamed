@@ -3,7 +3,6 @@ import pickle
 import random
 import logging
 import uuid
-
 import aioredis
 
 logging.basicConfig(level=logging.DEBUG)
@@ -15,10 +14,15 @@ class Actor:
         self.queue = queue
         self.name = name
         self.world = world
+        self.stopping = False
+        asyncio.ensure_future(self.loop())
+
+    async def loop(self):
+        pass
 
     async def tell(self, msg, sender=None, msg_id=None):
         if msg_id:
-            msg['msg_id'] = msg_id
+            msg["msg_id"] = msg_id
         await self.queue.put((msg, sender))
 
     async def on_message(self, msg, sender):
@@ -35,7 +39,9 @@ class Actor:
         pass
 
     async def post_stop(self):
-        await self.world.tell(self.world.self_actor.name, {'cmd': 'STOPPED'}, sender=self.name)
+        await self.world.tell(
+            self.world.self_actor.name, {"cmd": "STOPPED"}, sender=self.name
+        )
 
     async def pre_message(self, msg, sender):
         return msg, sender
@@ -49,13 +55,13 @@ class Actor:
             if item is None:
                 # the producer emits None to indicate that it is done
                 # print("breaking - {}".format(self.name))
+                self.stopping = True
                 await self.on_stop()
                 break
 
-            if item and 'cmd' in item[0]:
-                logger.info(f"consume2 {item[0]['cmd']}")
-
-                if item[0]['cmd'] == 'INTERNAL_STOP':
+            if item and "cmd" in item[0]:
+                if item[0]["cmd"] == "INTERNAL_STOP":
+                    self.stopping = True
                     await self.on_stop()
                     await self.post_stop()
                     return
@@ -67,7 +73,6 @@ class Actor:
             except Exception as e:
                 logger.exception(f"Exception on processing on_message {self.name}")
                 print("-> exception", e, type(e), self, item)
-        # print("Exiting actor")
 
 
 class SuspendableActor(Actor):
@@ -81,12 +86,12 @@ class SuspendableActor(Actor):
         self.state.update(new_state)
 
     async def save_state(self):
-        logger.info("saving state 2")
-
-        await self.world.tell('persistence', {'cmd': 'SAVE_STATE', 'data': self.state}, sender=self.name)
+        await self.world.tell(
+            "persistence", {"cmd": "SAVE_STATE", "data": self.state}, sender=self.name
+        )
 
     async def load_state(self):
-        await self.world.tell('persistence', {'cmd': 'LOAD_STATE'}, sender=self.name)
+        await self.world.tell("persistence", {"cmd": "LOAD_STATE"}, sender=self.name)
 
     async def replay_waiting_messages(self):
         for t in self.wait_queue:
@@ -96,7 +101,7 @@ class SuspendableActor(Actor):
 
     async def pre_message(self, msg, sender):
         if self.wait_for:
-            if msg['cmd'] != self.wait_for:
+            if msg["cmd"] != self.wait_for:
                 logger.info(f"waiting for {self.wait_for} but received {msg}")
                 self.wait_queue.append((msg, sender))
             else:
@@ -108,23 +113,23 @@ class SuspendableActor(Actor):
             return msg, sender
 
     async def on_message(self, msg, sender):
-        if msg['cmd'] == 'INTERNAL_SUSPEND':
+        if msg["cmd"] == "INTERNAL_SUSPEND":
             logger.info("saving state ")
 
             await self.save_state()
             return
 
-        if msg['cmd'] == 'INTERNAL_RELOAD_STATE':
+        if msg["cmd"] == "INTERNAL_RELOAD_STATE":
             logger.info("re-loading state ")
             await self.load_state()
-            self.wait_for = 'LOADED_STATE'
+            self.wait_for = "LOADED_STATE"
             return
 
-        if msg['cmd'] == 'LOADED_STATE':
-            return await self.set_state(msg['data'])
+        if msg["cmd"] == "LOADED_STATE":
+            return await self.set_state(msg["data"])
 
         try:
-            await self.set_state({'recv': self.state.get('recv', 0) + 1})
+            await self.set_state({"recv": self.state.get("recv", 0) + 1})
         except Exception:  # noqa
             logger.exception("Exception received on message in actor")
 
@@ -139,7 +144,7 @@ class RedisPersistence(Actor):
         data = await self.redis.get(key)
         data = pickle.loads(data)
         logger.info("loaded data - %s", data)
-        await self.world.tell(sender, {'cmd': 'LOADED_STATE', 'data': data})
+        await self.world.tell(sender, {"cmd": "LOADED_STATE", "data": data})
 
     async def connect(self, conn_url):
         self.redis = await aioredis.create_redis_pool(conn_url)
@@ -151,15 +156,15 @@ class RedisPersistence(Actor):
 
     async def on_message(self, msg, sender):
         # logger.info("PERSISTENCE - got message on persistence %s %s", msg, sender)
-        if msg['cmd'] == 'connect':
-            await self.connect(msg['data'])
+        if msg["cmd"] == "connect":
+            await self.connect(msg["data"])
 
-        if msg['cmd'] == 'SAVE_STATE':
-            await self.save(f'state::{sender}', msg['data'])
+        if msg["cmd"] == "SAVE_STATE":
+            await self.save(f"state::{sender}", msg["data"])
 
-        if msg['cmd'] == 'LOAD_STATE':
+        if msg["cmd"] == "LOAD_STATE":
             logger.info("load sate !")
-            await self.load(f'state::{sender}', sender)
+            await self.load(f"state::{sender}", sender)
 
     def __del__(self):
         print("delete !")
@@ -170,31 +175,50 @@ class WorldActor(Actor):
         try:
             await super().on_message(msg, sender)
             logger.info("msg world actor %s", msg)
-            if 'reply_to' in msg:
+            if "reply_to" in msg:
                 await self.world.got_reply(msg)
 
-            if msg.get('cmd', None) == 'STOPPED':
+            if msg.get("cmd", None) == "STOPPED":
                 logger.info(f"received STOPPED {sender}")
                 if sender in self.world.wait_stop:
                     self.world.wait_stop.remove(sender)
-                # del self.world.actors[sender]
-
+                    del self.world.actors[sender]
 
         except Exception as e:
             logger.exception("exception on world actor")
-
             print("-> exc world actor", e, type(e))
+
+
+class TaskScheduler(SuspendableActor):
+    async def on_message(self, msg, sender):
+        await super().on_message(msg, sender)
+        if msg["cmd"] == "schedule":
+            await self.set_state(
+                {
+                    msg["data"]["at"]: {
+                        "at": msg["data"]["at"],
+                        "actor": msg["data"]["actor"],
+                        "msg": msg["data"]["msg"],
+                    }
+                }
+            )
+
+    async def loop(self):
+        while True:
+            if self.stopping:
+                return
+            await asyncio.sleep(0.100)
 
 
 class World:
     def __init__(self):
         self.actors = {}
-        self.self_actor = self.create_actor('world', WorldActor)
+        self.self_actor = self.create_actor("world", WorldActor)
+        self.task_scheduler = self.create_actor("task_scheduler", TaskScheduler)
         self.wait_reply_list = {}
         self.wait_stop = set()
 
     def create_actor(self, name, klass=Actor, **init):
-        print("create actor", name)
         queue = asyncio.Queue()
         actor = klass(name, queue, self, **init)
         self.actors[name] = actor
@@ -204,7 +228,7 @@ class World:
     def get_actor(self, name):
         actor = self.actors.get(name, None)
         if not actor:
-            raise Exception(f'Actor "{name}" not found ')
+            logger.warning(f'Actor "{name}" not found')
         return actor
 
     def get_or_create_actor(self, name, klass=Actor):
@@ -216,7 +240,6 @@ class World:
     async def tell(self, who, msg, sender: str = None):
         logger.info("to actor - %s %s %s", who, msg, sender)
         actor = self.get_actor(who)
-        # print("found actor", actor)
         await actor.tell(msg, sender)
 
     async def tell_and_get(self, who, msg, sender=None):
@@ -225,45 +248,51 @@ class World:
         loop = asyncio.get_running_loop()
         fut = loop.create_future()
         self.wait_reply_list[msg_id] = fut
-
         await actor.tell(msg, sender=self.self_actor.name, msg_id=msg_id)
-
         return await fut
 
     async def got_reply(self, msg):
-        print("got reply !!!!", msg)
-        future = self.wait_reply_list[msg['reply_to']]
+        future = self.wait_reply_list[msg["reply_to"]]
         future.set_result(msg)
 
     async def suspend_actor(self, name):
-        print("suspend actor", name)
         actor = self.actors[name]
-        await actor.tell({'cmd': 'INTERNAL_SUSPEND'}, None)
+        await actor.tell({"cmd": "INTERNAL_SUSPEND"}, None)
+        await actor.queue.put(None)
+        del self.actors[name]
+
+    async def remove_actor(self, name):
+        actor = self.actors[name]
         await actor.queue.put(None)
         del self.actors[name]
 
     async def stop_actor(self, name):
-        actor = self.actors[name]
-        await actor.queue.put(None)
-        del self.actors[name]
+        actor = self.get_actor(name)
+        self.wait_stop.add(name)
+        logger.info(f"WAIT self.wait_stop {self.wait_stop}")
+        await actor.tell({"cmd": "INTERNAL_STOP"}, None)
+        while True:
+            if not self.wait_stop or (name not in self.wait_stop):
+                break
+            await asyncio.sleep(0.100)
 
     async def stop(self):
         for name, actor in self.actors.items():
             if name != self.self_actor.name:
                 self.wait_stop.add(name)
                 logger.info(f"WAIT self.wait_stop {self.wait_stop}")
-                await actor.tell({'cmd': 'INTERNAL_STOP'}, None)
+                await actor.tell({"cmd": "INTERNAL_STOP"}, None)
 
         while True:
             if not self.wait_stop:
                 break
             await asyncio.sleep(0.100)
 
-        await self.stop_actor(self.self_actor.name)
+        await self.remove_actor(self.self_actor.name)
 
     async def revive_actor(self, name, klass):
         actor = self.create_actor(name, klass)
-        await actor.tell({'cmd': 'INTERNAL_RELOAD_STATE'})
+        await actor.tell({"cmd": "INTERNAL_RELOAD_STATE"})
 
     async def destroy(self):
         for k, actor in self.actors.items():
