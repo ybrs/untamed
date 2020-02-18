@@ -3,6 +3,7 @@ import pickle
 import random
 import logging
 import uuid
+
 import aioredis
 
 logging.basicConfig(level=logging.DEBUG)
@@ -297,3 +298,26 @@ class World:
     async def destroy(self):
         for k, actor in self.actors.items():
             await actor.queue.put(None)
+
+
+async def run(world):
+    persistence = world.create_actor('persistence', RedisPersistence)
+    await persistence.tell({'cmd': 'connect', 'data': 'redis://localhost:6379/11'})
+    # await world.stop_actor('persistence')
+
+
+def run_world():
+    import uvloop
+    uvloop.install()
+
+    loop = asyncio.get_event_loop()
+    world = World()
+    try:
+        asyncio.ensure_future(run(world))
+        loop.run_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print('step: loop.close()')
+        loop.run_until_complete(world.stop())
+        loop.close()
