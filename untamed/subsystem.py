@@ -1,7 +1,10 @@
 import asyncio
+import importlib
+import os
 import pickle
 import random
 import logging
+import sys
 import uuid
 
 import aioredis
@@ -17,6 +20,9 @@ class Actor:
         self.world = world
         self.stopping = False
         asyncio.ensure_future(self.loop())
+
+    async def after_create(self):
+        pass
 
     async def loop(self):
         pass
@@ -223,6 +229,7 @@ class World:
         queue = asyncio.Queue()
         actor = klass(name, queue, self, **init)
         self.actors[name] = actor
+        asyncio.ensure_future(actor.after_create())
         asyncio.ensure_future(actor.consume())
         return actor
 
@@ -299,11 +306,19 @@ class World:
         for k, actor in self.actors.items():
             await actor.queue.put(None)
 
+    async def basic_config(self, redis_host='redis://localhost:6379/11'):
+        persistence = self.create_actor('persistence', RedisPersistence)
+        await persistence.tell({'cmd': 'connect', 'data': redis_host})
+
 
 async def run(world):
-    persistence = world.create_actor('persistence', RedisPersistence)
-    await persistence.tell({'cmd': 'connect', 'data': 'redis://localhost:6379/11'})
-    # await world.stop_actor('persistence')
+    try:
+        sys.path.append(os.getcwd())
+        mdl = importlib.import_module('world')
+    except Exception as e:
+        logger.exception("Import exception - couldn't configure world")
+        return
+    await mdl.main(world)
 
 
 def run_world():
@@ -318,6 +333,6 @@ def run_world():
     except KeyboardInterrupt:
         pass
     finally:
-        print('step: loop.close()')
+        print('stoping world')
         loop.run_until_complete(world.stop())
         loop.close()

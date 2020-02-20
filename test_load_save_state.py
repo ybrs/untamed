@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from subsystem import World, SuspendableActor, RedisPersistence
+from untamed.subsystem import World, SuspendableActor, RedisPersistence
 
 
 class SomeActor(SuspendableActor):
