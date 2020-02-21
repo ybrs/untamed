@@ -1,13 +1,20 @@
 import asyncio
+import functools
 import importlib
 import os
 import pickle
 import random
 import logging
 import sys
+import time
 import uuid
+from typing import Union
+
+import click
+from multiprocessing import Process
 
 import aioredis
+from watchdog.events import FileSystemEventHandler, DirModifiedEvent
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -91,11 +98,18 @@ class SuspendableActor(Actor):
 
     async def set_state(self, new_state: dict):
         self.state.update(new_state)
+        await self.save_state()
 
     async def save_state(self):
         await self.world.tell(
             "persistence", {"cmd": "SAVE_STATE", "data": self.state}, sender=self.name
         )
+
+    async def after_create(self):
+        # TODO: we need better locking
+        self.wait_for = 'PRELOAD'
+        await self.load_state()
+        self.wait_for = None
 
     async def load_state(self):
         await self.world.tell("persistence", {"cmd": "LOAD_STATE"}, sender=self.name)
@@ -149,7 +163,10 @@ class RedisPersistence(Actor):
 
     async def load(self, key, sender):
         data = await self.redis.get(key)
-        data = pickle.loads(data)
+        if data:
+            data = pickle.loads(data)
+        else:
+            data = {}
         logger.info("loaded data - %s", data)
         await self.world.tell(sender, {"cmd": "LOADED_STATE", "data": data})
 
@@ -221,7 +238,6 @@ class World:
     def __init__(self):
         self.actors = {}
         self.self_actor = self.create_actor("world", WorldActor)
-        self.task_scheduler = self.create_actor("task_scheduler", TaskScheduler)
         self.wait_reply_list = {}
         self.wait_stop = set()
 
@@ -306,9 +322,15 @@ class World:
         for k, actor in self.actors.items():
             await actor.queue.put(None)
 
-    async def basic_config(self, redis_host='redis://localhost:6379/11'):
+    async def basic_config(self, redis_url=None):
+        if not redis_url:
+            redis_url = self.redis_url
         persistence = self.create_actor('persistence', RedisPersistence)
-        await persistence.tell({'cmd': 'connect', 'data': redis_host})
+        await persistence.tell({'cmd': 'connect', 'data': redis_url})
+        self.create_actor("task_scheduler", TaskScheduler)
+
+    def set_redis_url(self, redis_url):
+        self.redis_url = redis_url
 
 
 async def run(world):
@@ -321,12 +343,21 @@ async def run(world):
     await mdl.main(world)
 
 
-def run_world():
+def run_proc(redis_url, dev=None):
     import uvloop
     uvloop.install()
 
-    loop = asyncio.get_event_loop()
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError as e:
+        if 'no current event loop' in e.args[0]:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        else:
+            raise
+
     world = World()
+    world.set_redis_url(redis_url)
     try:
         asyncio.ensure_future(run(world))
         loop.run_forever()
@@ -336,3 +367,59 @@ def run_world():
         print('stoping world')
         loop.run_until_complete(world.stop())
         loop.close()
+
+
+class DevProcess:
+    def __init__(self, redis_url):
+        self.process: Union[None, Process] = None
+        self.redis_url = redis_url
+
+    def spawn(self):
+        process = Process(target=run_proc, args=(self.redis_url,), kwargs={'dev': True})
+        process.start()
+        self.process = process
+        return process
+
+    def stop(self):
+        self.process.kill()
+        self.process.join(1)
+
+    def restart(self):
+        self.stop()
+        self.spawn()
+
+
+class FileChangeHandler(FileSystemEventHandler):
+    def __init__(self, process):
+        self.process = process
+
+    def dispatch(self, event):
+        if isinstance(event, DirModifiedEvent):
+            return
+
+        print("->>>", event)
+        self.process.restart()
+
+
+@click.command()
+@click.option('--redis-url', default='redis://localhost:6379/11', help='Redis url')
+@click.option("-d", "--dev", is_flag=True, help="run in development mode")
+def run_world(redis_url, dev=None):
+    from watchdog.observers import Observer
+
+    if dev:
+        dev_process = DevProcess(redis_url)
+        dev_process.spawn()
+        fch = FileChangeHandler(dev_process)
+        observer = Observer()
+        observer.schedule(fch, os.getcwd(), recursive=True)
+        observer.start()
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            observer.stop()
+        observer.join()
+
+    else:
+        run_proc(redis_url, dev=dev)

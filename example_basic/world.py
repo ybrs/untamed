@@ -67,7 +67,6 @@ async def main(world):
 
     @app.middleware("request")
     async def add_world(request):
-        # Arbitrary data may be stored in request context:
         request.ctx.world = world
 
     webserv = world.create_actor("web-server", partial(web_server, app))
