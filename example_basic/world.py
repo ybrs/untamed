@@ -4,6 +4,7 @@ from functools import partial
 
 from sanic import Sanic
 from sanic.response import json
+from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 from untamed import SuspendableActor, Actor
 
@@ -47,14 +48,39 @@ async def test(request):
     return json({"actors": world.actors.keys(), "reply": result})
 
 
-@app.websocket("/ws")
-async def feed(request, ws):
+class WebsocketConnectionActor(Actor):
+    def __init__(self, ws, *args, **kw):
+        self.ws = ws
+        super(WebsocketConnectionActor, self).__init__(*args, **kw)
+
+
+class Pinger:
+    def __init__(self, ws):
+        self.ws = ws
+
+    async def loop(self):
+        while True:
+            try:
+                await self.ws.send("ping")
+                await asyncio.sleep(1)
+            except (ConnectionClosed, ConnectionClosedError):
+                return
+
+@app.websocket("/ws/<room>")
+async def websocket(request, ws, room):
+    p = Pinger(ws)
+    asyncio.ensure_future(p.loop())
+
     while True:
-        data = "hello!"
-        print("Sending: " + data)
-        await ws.send(data)
-        data = await ws.recv()
-        print("Received: " + data)
+        try:
+            data = await ws.recv()
+        except (ConnectionClosed, ConnectionClosedError):
+            print("CONNECTION CLOSED")
+            return
+        except Exception as e:
+            print("EXCEPTION.........", e, type(e), ws.state)
+            return
+        await ws.send(f"welcome to {room} - {data}")
 
 
 def web_server(app, *args, **kw):
@@ -63,10 +89,12 @@ def web_server(app, *args, **kw):
 
 async def main(world):
     await world.basic_config()
-    actor = world.create_actor("some-actor", SomeActor)
 
     @app.middleware("request")
     async def add_world(request):
         request.ctx.world = world
 
+    app.static('/static', './static')
+
     webserv = world.create_actor("web-server", partial(web_server, app))
+    actor = world.create_actor("some-actor", SomeActor)
